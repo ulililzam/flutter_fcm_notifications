@@ -1,8 +1,8 @@
 name: flutter_fcm_notifications
 description: A production-ready Flutter plugin for Firebase Cloud Messaging with beautiful UI and customizable notifications management.
 version: 1.0.0
-homepage: https://github.com/yourusername/flutter_fcm_notifications
-repository: https://github.com/yourusername/flutter_fcm_notifications
+homepage: https://github.com/ulililzam/flutter_fcm_notifications
+repository: https://github.com/ulililzam/flutter_fcm_notifications
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
