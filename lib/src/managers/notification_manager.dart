@@ -1,288 +1,198 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../models/notification_item.dart';
-import '../config/notification_config.dart';
 
-/// Manager class for handling notifications with persistence
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+
+import '../config/notification_config.dart';
+import '../models/notification_item.dart';
+
+/// Manages the lifecycle of notifications — adding, reading, persisting,
+/// and clearing — using a single [SharedPreferences] key for storage.
+///
+/// Usage:
+/// ```dart
+/// final manager = NotificationManager();
+/// await manager.initialize();
+/// await manager.addNotification(remoteMessage);
+/// ```
 class NotificationManager extends ChangeNotifier {
   final NotificationConfig config;
-  
+
   List<NotificationItem> _notifications = [];
-  final Map<String, bool> _readStatus = {};
-  final Map<String, DateTime> _messageTimestamps = {};
-  
   bool _isInitialized = false;
-  
-  static const String _notificationsKey = 'fcm_notifications';
-  static const String _readStatusPrefix = 'read_';
-  static const String _timestampPrefix = 'timestamp_';
+
+  SharedPreferences? _prefs;
+
+  static const String _storageKey = 'fcm_notifications';
+  static const _uuid = Uuid();
 
   NotificationManager({
     this.config = const NotificationConfig(),
   });
 
-  /// Get all notifications
+  // ─── Public getters ──────────────────────────────────────────────────────
+
+  /// Immutable snapshot of all stored notifications, newest first.
   List<NotificationItem> get notifications => List.unmodifiable(_notifications);
 
-  /// Get unread notifications count
+  /// Number of notifications the user has not yet opened.
   int get unreadCount => _notifications.where((n) => !n.isRead).length;
 
-  /// Get read status map
-  Map<String, bool> get readStatus => Map.unmodifiable(_readStatus);
-
-  /// Get message timestamps
-  Map<String, DateTime> get messageTimestamps => Map.unmodifiable(_messageTimestamps);
-
-  /// Check if manager is initialized
+  /// Whether [initialize] has completed successfully.
   bool get isInitialized => _isInitialized;
 
-  /// Initialize the manager and load persisted data
+  // ─── Lifecycle ───────────────────────────────────────────────────────────
+
+  /// Loads persisted notifications from storage. Must be called once before
+  /// using any other method.
   Future<void> initialize() async {
     if (_isInitialized) return;
 
     try {
-      await _loadNotifications();
-      await _loadReadStatus();
-      await _loadTimestamps();
+      _prefs = await SharedPreferences.getInstance();
+      await _loadFromStorage();
       _isInitialized = true;
       notifyListeners();
-    } catch (e) {
-      debugPrint('Error initializing NotificationManager: $e');
+    } catch (e, st) {
+      debugPrint('[NotificationManager] initialize failed: $e\n$st');
       rethrow;
     }
   }
 
-  /// Add a new notification from RemoteMessage
+  // ─── Mutations ───────────────────────────────────────────────────────────
+
+  /// Converts [message] into a [NotificationItem] and prepends it to the
+  /// list. Silently ignores duplicate message IDs.
   Future<void> addNotification(RemoteMessage message) async {
     try {
-      final timestamp = DateTime.now();
-      final messageId = message.messageId ?? '';
+      // Resolve a guaranteed-non-null ID: prefer Firebase's, fall back to UUID.
+      final messageId =
+          (message.messageId?.isNotEmpty ?? false) ? message.messageId! : _uuid.v4();
 
-      // Save timestamp
-      if (messageId.isNotEmpty) {
-        _messageTimestamps[messageId] = timestamp;
-        await _saveTimestamp(messageId, timestamp);
-      }
+      // Deduplicate
+      if (_notifications.any((n) => n.messageId == messageId)) return;
 
-      final notification = NotificationItem.fromRemoteMessage(
+      final item = NotificationItem.fromRemoteMessage(
         message,
-        timestamp: timestamp,
-        isRead: false,
+        messageId: messageId,
+        timestamp: DateTime.now(),
       );
 
-      // Add to the beginning of the list
-      _notifications.insert(0, notification);
+      _notifications.insert(0, item);
 
-      // Limit to max notifications
+      // Enforce capacity limit
       if (_notifications.length > config.maxNotifications) {
-        final removed = _notifications.removeLast();
-        // Clean up old data
-        if (removed.messageId != null) {
-          await _removeReadStatus(removed.messageId!);
-          await _removeTimestamp(removed.messageId!);
-        }
+        _notifications.removeLast();
       }
 
-      await _saveNotifications();
+      await _persist();
       notifyListeners();
-    } catch (e) {
-      debugPrint('Error adding notification: $e');
+    } catch (e, st) {
+      debugPrint('[NotificationManager] addNotification failed: $e\n$st');
       rethrow;
     }
   }
 
-  /// Mark a notification as read
+  /// Marks the notification with [messageId] as read. No-ops if not found
+  /// or already read.
   Future<void> markAsRead(String messageId) async {
     try {
-      _readStatus[messageId] = true;
-      await _saveReadStatus(messageId, true);
-
-      // Update the notification item
       final index = _notifications.indexWhere((n) => n.messageId == messageId);
-      if (index != -1) {
-        _notifications[index].isRead = true;
-      }
+      if (index == -1 || _notifications[index].isRead) return;
 
+      _notifications[index] = _notifications[index].copyWith(isRead: true);
+      await _persist();
       notifyListeners();
-    } catch (e) {
-      debugPrint('Error marking notification as read: $e');
+    } catch (e, st) {
+      debugPrint('[NotificationManager] markAsRead failed: $e\n$st');
       rethrow;
     }
   }
 
-  /// Mark all notifications as read
+  /// Marks every unread notification as read.
   Future<void> markAllAsRead() async {
     try {
-      for (var notification in _notifications) {
-        if (!notification.isRead && notification.messageId != null) {
-          notification.isRead = true;
-          _readStatus[notification.messageId!] = true;
-          await _saveReadStatus(notification.messageId!, true);
+      bool changed = false;
+
+      for (int i = 0; i < _notifications.length; i++) {
+        if (!_notifications[i].isRead) {
+          _notifications[i] = _notifications[i].copyWith(isRead: true);
+          changed = true;
         }
       }
+
+      if (!changed) return;
+
+      await _persist();
       notifyListeners();
-    } catch (e) {
-      debugPrint('Error marking all as read: $e');
+    } catch (e, st) {
+      debugPrint('[NotificationManager] markAllAsRead failed: $e\n$st');
       rethrow;
     }
   }
 
-  /// Clear all notifications
-  Future<void> clearAll() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      
-      // Remove all notification-related data
-      for (var notification in _notifications) {
-        if (notification.messageId != null) {
-          await prefs.remove('$_readStatusPrefix${notification.messageId}');
-          await prefs.remove('$_timestampPrefix${notification.messageId}');
-        }
-      }
-      
-      await prefs.remove(_notificationsKey);
-      
-      _notifications.clear();
-      _readStatus.clear();
-      _messageTimestamps.clear();
-      
-      notifyListeners();
-    } catch (e) {
-      debugPrint('Error clearing notifications: $e');
-      rethrow;
-    }
-  }
-
-  /// Remove a specific notification
+  /// Removes the notification with [messageId]. No-ops if not found.
   Future<void> removeNotification(String messageId) async {
     try {
+      final before = _notifications.length;
       _notifications.removeWhere((n) => n.messageId == messageId);
-      await _removeReadStatus(messageId);
-      await _removeTimestamp(messageId);
-      await _saveNotifications();
+      if (_notifications.length == before) return;
+
+      await _persist();
       notifyListeners();
-    } catch (e) {
-      debugPrint('Error removing notification: $e');
+    } catch (e, st) {
+      debugPrint('[NotificationManager] removeNotification failed: $e\n$st');
       rethrow;
     }
   }
 
-  // Private methods for persistence
-
-  Future<void> _loadNotifications() async {
+  /// Deletes all notifications from memory and storage.
+  Future<void> clearAll() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final String? notificationsJson = prefs.getString(_notificationsKey);
-      
-      if (notificationsJson != null) {
-        final List<dynamic> decoded = jsonDecode(notificationsJson);
-        _notifications = decoded
-            .map((json) => NotificationItem.fromJson(json as Map<String, dynamic>))
-            .toList();
-      }
+      _notifications.clear();
+      await _prefs?.remove(_storageKey);
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('[NotificationManager] clearAll failed: $e\n$st');
+      rethrow;
+    }
+  }
+
+  // ─── Persistence ─────────────────────────────────────────────────────────
+
+  Future<void> _loadFromStorage() async {
+    try {
+      final raw = _prefs?.getString(_storageKey);
+      if (raw == null) return;
+
+      final list = jsonDecode(raw) as List<dynamic>;
+      _notifications = list
+          .map((e) => NotificationItem.fromJson(e as Map<String, dynamic>))
+          .toList();
     } catch (e) {
-      debugPrint('Error loading notifications: $e');
+      debugPrint('[NotificationManager] _loadFromStorage failed: $e');
       _notifications = [];
     }
   }
 
-  Future<void> _saveNotifications() async {
+  Future<void> _persist() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final List<Map<String, dynamic>> jsonList = 
-          _notifications.map((n) => n.toJson()).toList();
-      await prefs.setString(_notificationsKey, jsonEncode(jsonList));
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final json = jsonEncode(_notifications.map((n) => n.toJson()).toList());
+      await prefs.setString(_storageKey, json);
     } catch (e) {
-      debugPrint('Error saving notifications: $e');
+      debugPrint('[NotificationManager] _persist failed: $e');
     }
   }
 
-  Future<void> _loadReadStatus() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys().where((k) => k.startsWith(_readStatusPrefix));
-      
-      for (var key in keys) {
-        final messageId = key.replaceFirst(_readStatusPrefix, '');
-        _readStatus[messageId] = prefs.getBool(key) ?? false;
-      }
-
-      // Update notification items with read status
-      for (var notification in _notifications) {
-        if (notification.messageId != null) {
-          notification.isRead = _readStatus[notification.messageId!] ?? false;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading read status: $e');
-    }
-  }
-
-  Future<void> _saveReadStatus(String messageId, bool isRead) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('$_readStatusPrefix$messageId', isRead);
-    } catch (e) {
-      debugPrint('Error saving read status: $e');
-    }
-  }
-
-  Future<void> _removeReadStatus(String messageId) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('$_readStatusPrefix$messageId');
-      _readStatus.remove(messageId);
-    } catch (e) {
-      debugPrint('Error removing read status: $e');
-    }
-  }
-
-  Future<void> _loadTimestamps() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys().where((k) => k.startsWith(_timestampPrefix));
-      
-      for (var key in keys) {
-        final messageId = key.replaceFirst(_timestampPrefix, '');
-        final timestampStr = prefs.getString(key);
-        if (timestampStr != null) {
-          _messageTimestamps[messageId] = DateTime.parse(timestampStr);
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading timestamps: $e');
-    }
-  }
-
-  Future<void> _saveTimestamp(String messageId, DateTime timestamp) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        '$_timestampPrefix$messageId',
-        timestamp.toIso8601String(),
-      );
-    } catch (e) {
-      debugPrint('Error saving timestamp: $e');
-    }
-  }
-
-  Future<void> _removeTimestamp(String messageId) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('$_timestampPrefix$messageId');
-      _messageTimestamps.remove(messageId);
-    } catch (e) {
-      debugPrint('Error removing timestamp: $e');
-    }
-  }
+  // ─── ChangeNotifier override ─────────────────────────────────────────────
 
   @override
   void dispose() {
     _notifications.clear();
-    _readStatus.clear();
-    _messageTimestamps.clear();
     super.dispose();
   }
 }
+

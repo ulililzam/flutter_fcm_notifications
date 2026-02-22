@@ -6,9 +6,9 @@ class EmptyStateWidget extends StatelessWidget {
   final NotificationConfig config;
 
   const EmptyStateWidget({
-    Key? key,
+    super.key,
     required this.config,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

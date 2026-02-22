@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -22,9 +23,9 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
 
   if (kDebugMode) {
-    print("Background message: ${message.messageId}");
-    print('Title: ${message.notification?.title}');
-    print('Body: ${message.notification?.body}');
+    debugPrint('Background message: ${message.messageId}');
+    debugPrint('Title: ${message.notification?.title}');
+    debugPrint('Body: ${message.notification?.body}');
   }
 
   // Show notification
@@ -42,8 +43,15 @@ Future<void> _showNotification(RemoteMessage message) async {
     showWhen: true,
   );
 
+  const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+    presentAlert: true,
+    presentBadge: true,
+    presentSound: true,
+  );
+
   const NotificationDetails notificationDetails = NotificationDetails(
     android: androidDetails,
+    iOS: iosDetails,
   );
 
   await flutterLocalNotificationsPlugin.show(
@@ -64,19 +72,34 @@ void main() async {
     );
   } catch (e) {
     if (kDebugMode) {
-      print('Firebase initialization error: $e');
+      debugPrint('Firebase initialization error: $e');
     }
   }
 
-  // Initialize local notifications
+  // Initialize local notifications — Android + iOS
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
 
+  const DarwinInitializationSettings initializationSettingsIOS =
+      DarwinInitializationSettings(
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
+
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
+    iOS: initializationSettingsIOS,
   );
 
   await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+  // Enable FCM foreground display on iOS
+  await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+    alert: true,
+    badge: true,
+    sound: true,
+  );
 
   // Create notification channel
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
@@ -170,6 +193,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _setupFCM() async {
+    // Capture context-dependent refs before any await to avoid async-gap issues
     final messaging = FirebaseMessaging.instance;
     final manager = context.read<NotificationManager>();
 
@@ -185,85 +209,83 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     );
 
     if (kDebugMode) {
-      print('Permission granted: ${settings.authorizationStatus}');
+      debugPrint('Permission granted: ${settings.authorizationStatus}');
     }
 
     // Get FCM token
     final token = await messaging.getToken();
-    setState(() {
-      _fcmToken = token;
-    });
+    if (!mounted) return;
+    setState(() => _fcmToken = token);
 
     if (kDebugMode) {
-      print('===========================================');
-      print('FCM Token:');
-      print(token);
-      print('===========================================');
+      debugPrint('========================================');
+      debugPrint('FCM Token: $token');
+      debugPrint('========================================');
     }
+
+    // Refresh token when rotated by Firebase
+    messaging.onTokenRefresh.listen((newToken) {
+      if (kDebugMode) debugPrint('FCM Token refreshed: $newToken');
+      if (mounted) setState(() => _fcmToken = newToken);
+      // TODO: send newToken to your backend
+    });
 
     // Handle foreground messages
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       if (kDebugMode) {
-        print('Foreground message: ${message.messageId}');
-        print('Title: ${message.notification?.title}');
-        print('Body: ${message.notification?.body}');
+        debugPrint('Foreground message: ${message.messageId}');
+        debugPrint('Title: ${message.notification?.title}');
+        debugPrint('Body: ${message.notification?.body}');
       }
 
-      // Add to manager
       manager.addNotification(message);
 
-      // Update UI
-      setState(() {
-        _messageCount++;
-        _lastMessageTitle = message.notification?.title ?? 'Data Message';
-        _lastMessageBody = message.notification?.body ?? message.data.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _messageCount++;
+          _lastMessageTitle = message.notification?.title ?? 'Data Message';
+          _lastMessageBody =
+              message.notification?.body ?? message.data.toString();
+        });
+        _animationController.forward(from: 0.0);
+      }
 
-      _animationController.forward(from: 0.0);
-
-      // Show notification
       _showNotification(message);
     });
 
     // Handle message opened from notification tap
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      if (kDebugMode) {
-        print('Notification tapped: ${message.messageId}');
-      }
-
+      if (kDebugMode) debugPrint('Notification tapped: ${message.messageId}');
       manager.addNotification(message);
 
-      // Navigate to notification screen
+      if (!mounted) return;
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => NotificationScreen(
-            manager: manager,
-          ),
+          builder: (_) => NotificationScreen(manager: manager),
         ),
       );
     });
 
-    // Check for initial message (app opened from terminated state)
+    // App opened from terminated state via notification
     final initialMessage = await messaging.getInitialMessage();
     if (initialMessage != null) {
       if (kDebugMode) {
-        print('App opened from notification: ${initialMessage.messageId}');
+        debugPrint('App opened from notification: ${initialMessage.messageId}');
       }
       manager.addNotification(initialMessage);
     }
   }
 
   void _copyToken() {
-    if (_fcmToken != null) {
-      // In a real app, you'd use Clipboard.setData here
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Token: $_fcmToken'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
+    if (_fcmToken == null) return;
+    Clipboard.setData(ClipboardData(text: _fcmToken!));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('FCM Token copied to clipboard'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   @override
@@ -343,7 +365,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       gradient: LinearGradient(
                         colors: [
                           colorScheme.primary,
-                          colorScheme.primary.withOpacity(0.7),
+                          colorScheme.primary.withValues(alpha: 0.7),
                         ],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
@@ -351,7 +373,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       borderRadius: BorderRadius.circular(20),
                       boxShadow: [
                         BoxShadow(
-                          color: colorScheme.primary.withOpacity(0.3),
+                          color: colorScheme.primary.withValues(alpha: 0.3),
                           blurRadius: 20,
                           offset: const Offset(0, 10),
                         ),
@@ -365,7 +387,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
+                                color: Colors.white.withValues(alpha: 0.2),
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: const Icon(
@@ -457,7 +479,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(isDark ? 0.3 : 0.05),
+                          color: Colors.black.withValues(
+                              alpha: isDark ? 0.3 : 0.05),
                           blurRadius: 10,
                           offset: const Offset(0, 4),
                         ),
@@ -594,7 +617,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.3 : 0.05),
+            color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
@@ -606,7 +629,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+              color: Theme.of(context)
+                  .colorScheme
+                  .primary
+                  .withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Center(

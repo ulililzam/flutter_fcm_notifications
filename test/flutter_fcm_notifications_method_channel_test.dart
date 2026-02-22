@@ -5,7 +5,7 @@ import 'package:flutter_fcm_notifications/flutter_fcm_notifications_method_chann
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  MethodChannelFlutterFcmNotifications platform = MethodChannelFlutterFcmNotifications();
+  final MethodChannelFlutterFcmNotifications platform = MethodChannelFlutterFcmNotifications();
   const MethodChannel channel = MethodChannel('flutter_fcm_notifications');
 
   setUp(() {

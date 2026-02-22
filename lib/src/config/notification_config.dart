@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/notification_item.dart';
 
 /// Configuration class for customizing the notification screen appearance and behavior
 class NotificationConfig {
@@ -80,6 +81,18 @@ class NotificationConfig {
   /// Empty state icon color
   final Color emptyStateIconColor;
 
+  /// Callback invoked when the user taps a notification card.
+  ///
+  /// Use this to navigate to a specific route using the notification's
+  /// [NotificationItem.clickAction] or custom [NotificationItem.data]. Example:
+  /// ```dart
+  /// onNotificationTap: (n) => context.go(n.clickAction ?? '/notifications'),
+  /// ```
+  ///
+  /// Note: marking the notification as read is handled automatically before
+  /// this callback fires.
+  final void Function(NotificationItem notification)? onNotificationTap;
+
   const NotificationConfig({
     this.primaryColor = const Color(0xFF007AFF),
     this.backgroundColor = const Color(0xFFF2F2F7),
@@ -99,7 +112,7 @@ class NotificationConfig {
     this.noNotificationsSubtitle = 'Notifikasi baru akan muncul di sini',
     this.todayLabel = 'Hari ini',
     this.yesterdayLabel = 'Kemarin',
-    this.appBarTitle = 'Notifications',
+    this.appBarTitle = 'Notifikasi',
     this.enableHapticFeedback = true,
     this.enablePullToRefresh = true,
     this.cardBorderRadius = 12.0,
@@ -107,6 +120,7 @@ class NotificationConfig {
     this.emptyStateIconSize = 40.0,
     this.emptyStateIconBackgroundColor = const Color(0xFFE5E5EA),
     this.emptyStateIconColor = const Color(0xFF8E8E93),
+    this.onNotificationTap,
   });
 
   /// Create a copy of this configuration with updated values
@@ -137,6 +151,7 @@ class NotificationConfig {
     double? emptyStateIconSize,
     Color? emptyStateIconBackgroundColor,
     Color? emptyStateIconColor,
+    void Function(NotificationItem notification)? onNotificationTap,
   }) {
     return NotificationConfig(
       primaryColor: primaryColor ?? this.primaryColor,
@@ -165,6 +180,7 @@ class NotificationConfig {
       emptyStateIconSize: emptyStateIconSize ?? this.emptyStateIconSize,
       emptyStateIconBackgroundColor: emptyStateIconBackgroundColor ?? this.emptyStateIconBackgroundColor,
       emptyStateIconColor: emptyStateIconColor ?? this.emptyStateIconColor,
+      onNotificationTap: onNotificationTap ?? this.onNotificationTap,
     );
   }
 

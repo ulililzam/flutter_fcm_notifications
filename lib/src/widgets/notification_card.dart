@@ -10,11 +10,11 @@ class NotificationCard extends StatelessWidget {
   final VoidCallback? onTap;
 
   const NotificationCard({
-    Key? key,
+    super.key,
     required this.notification,
     required this.config,
     this.onTap,
-  }) : super(key: key);
+  });
 
   String _formatTime(DateTime timestamp) {
     try {
@@ -112,9 +112,38 @@ class NotificationCard extends StatelessWidget {
                       height: 1.2,
                       letterSpacing: -0.2,
                     ),
-                    maxLines: 1,
+                    maxLines: notification.imageUrl != null ? 2 : 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  // Image — shown only when the notification carries one
+                  if (notification.imageUrl != null) ...[
+                    const SizedBox(height: 10),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        notification.imageUrl!,
+                        width: double.infinity,
+                        height: 160,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        loadingBuilder: (context, child, progress) {
+                          if (progress == null) return child;
+                          return SizedBox(
+                            height: 160,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                value: progress.expectedTotalBytes != null
+                                    ? progress.cumulativeBytesLoaded /
+                                        progress.expectedTotalBytes!
+                                    : null,
+                                strokeWidth: 2,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

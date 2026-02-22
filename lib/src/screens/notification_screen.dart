@@ -14,65 +14,51 @@ class NotificationScreen extends StatefulWidget {
   final NotificationConfig? config;
 
   const NotificationScreen({
-    Key? key,
+    super.key,
     required this.manager,
     this.config,
-  }) : super(key: key);
+  });
 
   @override
   State<NotificationScreen> createState() => _NotificationScreenState();
 }
 
-class _NotificationScreenState extends State<NotificationScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _animationController;
+class _NotificationScreenState extends State<NotificationScreen> {
   late NotificationConfig _config;
-  String _filter = 'all'; // 'all' or 'unread'
+
+  /// 'all' or 'unread'
+  String _filter = 'all';
 
   Future<void> _refreshNotifications() async {
     await Future.delayed(const Duration(seconds: 1));
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   void _triggerHapticFeedback() {
-    if (_config.enableHapticFeedback) {
-      HapticFeedback.lightImpact();
-    }
+    if (_config.enableHapticFeedback) HapticFeedback.lightImpact();
   }
 
   @override
   void initState() {
     super.initState();
-
     _config = widget.config ?? const NotificationConfig();
-
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 300),
-      vsync: this,
-    );
 
     try {
       initializeDateFormatting(_config.locale, null);
     } catch (e) {
-      debugPrint('Error initializing locale: $e');
+      debugPrint('[NotificationScreen] locale init failed: $e');
     }
 
-    // Listen to manager changes
     widget.manager.addListener(_onManagerChanged);
   }
 
   void _onManagerChanged() {
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     widget.manager.removeListener(_onManagerChanged);
-    _animationController.dispose();
     super.dispose();
   }
 
@@ -81,21 +67,31 @@ class _NotificationScreenState extends State<NotificationScreen>
     final now = DateTime.now();
 
     // Filter notifications based on user selection
-    var filteredNotifications = _filter == 'unread'
+    final filteredNotifications = _filter == 'unread'
         ? widget.manager.notifications.where((n) => !n.isRead).toList()
         : widget.manager.notifications;
 
-    for (var notification in filteredNotifications) {
+    for (final notification in filteredNotifications) {
       String dateKey;
       try {
-        final difference = now.difference(notification.timestamp).inDays;
+        // Compare by calendar date, not by 24-hour difference
+        final today = DateTime(now.year, now.month, now.day);
+        final notifDay = DateTime(
+          notification.timestamp.year,
+          notification.timestamp.month,
+          notification.timestamp.day,
+        );
+        final daysAgo = today.difference(notifDay).inDays;
 
-        if (difference == 0) {
-          dateKey = '${_config.todayLabel}, ${DateFormat('d MMMM', _config.locale).format(notification.timestamp)}';
-        } else if (difference == 1) {
-          dateKey = '${_config.yesterdayLabel}, ${DateFormat('d MMMM', _config.locale).format(notification.timestamp)}';
+        if (daysAgo == 0) {
+          dateKey =
+              '${_config.todayLabel}, ${DateFormat('d MMMM', _config.locale).format(notification.timestamp)}';
+        } else if (daysAgo == 1) {
+          dateKey =
+              '${_config.yesterdayLabel}, ${DateFormat('d MMMM', _config.locale).format(notification.timestamp)}';
         } else {
-          dateKey = DateFormat('d MMMM', _config.locale).format(notification.timestamp);
+          dateKey = DateFormat('d MMMM yyyy', _config.locale)
+              .format(notification.timestamp);
         }
       } catch (e) {
         dateKey = _config.appBarTitle;
@@ -117,22 +113,14 @@ class _NotificationScreenState extends State<NotificationScreen>
 
   Future<void> _markAllAsRead() async {
     _triggerHapticFeedback();
-    _animationController.forward(from: 0.0).then((_) {
-      _animationController.reverse();
-    });
-
     await widget.manager.markAllAsRead();
   }
 
   Future<void> _markAsRead(NotificationItem notification) async {
     _triggerHapticFeedback();
-    _animationController.forward(from: 0.0).then((_) {
-      _animationController.reverse();
-    });
-
-    if (notification.messageId != null) {
-      await widget.manager.markAsRead(notification.messageId!);
-    }
+    await widget.manager.markAsRead(notification.messageId);
+    // Invoke deep-link / navigation callback after marking as read
+    _config.onNotificationTap?.call(notification);
   }
 
   @override
